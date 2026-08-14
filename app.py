@@ -879,6 +879,19 @@ def submit_complaint():
             "Location",
             placeholder="Example: Block A - First Floor",
         )
+        selected = st.selectbox(
+            "Complaint Type",
+            [
+                "Electrical",
+                "Plumbing",
+                "HVAC",
+                "IT / Network",
+                "Civil / Building",
+                "Cleaning / Housekeeping",
+                "Furniture",
+                "Other",
+            ],
+        )
 
         submitted = st.form_submit_button(
             "🤖 Analyse & Submit Complaint",
@@ -895,11 +908,16 @@ def submit_complaint():
             st.warning("Please enter the location.")
             return
 
+        if not selected:
+            st.warning("Please select a complaint type.")
+            return
+
         with st.spinner("CampusFix AI is analysing the complaint..."):
             try:
                 analysis = analyze_complaint(
                     description,
                     location,
+                    selected,
                 )
 
                 cid = create_complaint(
@@ -908,21 +926,6 @@ def submit_complaint():
                     location,
                     analysis,
                 )
-
-            except TypeError:
-                # Compatibility with agents.py implementations that
-                # accept only the complaint text.
-                try:
-                    analysis = analyze_complaint(description)
-                    cid = create_complaint(
-                        user["id"],
-                        description,
-                        location,
-                        analysis,
-                    )
-                except Exception as exc:
-                    st.error(f"AI analysis failed: {exc}")
-                    return
 
             except Exception as exc:
                 st.error(f"Unable to submit complaint: {exc}")
