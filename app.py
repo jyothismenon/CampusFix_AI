@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 from datetime import datetime
+import plotly.graph_objects as go
 
 from database import (
     init_db,
@@ -1161,31 +1162,80 @@ def technician_dashboard():
 # ============================================================
 
 def manager_dashboard():
+
     rows = get_all_complaints()
 
+    # --------------------------------------------------------
+    # BASIC COUNTS
+    # --------------------------------------------------------
+
     total = len(rows)
+
     active = len(
-        [r for r in rows if r["status"] != "Resolved"]
-    )
-    resolved = len(
-        [r for r in rows if r["status"] == "Resolved"]
-    )
-    high_risk = len(
-        [r for r in rows if str(r["risk"]).lower() == "high"]
+        [
+            r for r in rows
+            if str(r.get("status", "")).strip().lower()
+            not in ("resolved", "closed")
+        ]
     )
 
+    resolved = len(
+        [
+            r for r in rows
+            if str(r.get("status", "")).strip().lower()
+            in ("resolved", "closed")
+        ]
+    )
+
+    high_risk = len(
+        [
+            r for r in rows
+            if str(r.get("risk", "")).strip().lower() == "high"
+        ]
+    )
+
+    medium_risk = len(
+        [
+            r for r in rows
+            if str(r.get("risk", "")).strip().lower() == "medium"
+        ]
+    )
+
+    low_risk = len(
+        [
+            r for r in rows
+            if str(r.get("risk", "")).strip().lower() == "low"
+        ]
+    )
+
+    resolution_rate = (
+        round((resolved / total) * 100, 1)
+        if total > 0
+        else 0
+    )
+
+    # --------------------------------------------------------
+    # PAGE HEADER
+    # --------------------------------------------------------
+
     st.markdown(
-        '<div class="section-title">📊 Facility Management Dashboard</div>',
+        '<div class="section-title">'
+        '📊 Facility Management Dashboard'
+        '</div>',
         unsafe_allow_html=True,
     )
 
     st.markdown(
         '<div class="section-caption">'
         'Central monitoring of complaints, AI risk assessment, '
-        'priority and maintenance resolution.'
+        'priority, technician allocation and maintenance resolution.'
         '</div>',
         unsafe_allow_html=True,
     )
+
+    # --------------------------------------------------------
+    # TOP KPI CARDS
+    # --------------------------------------------------------
 
     a, b, c, d = st.columns(4)
 
@@ -1201,21 +1251,306 @@ def manager_dashboard():
     with d:
         metric("High Risk", high_risk, "🚨")
 
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
 
     if not rows:
         st.info("No complaints are available.")
         return
 
-    st.markdown("### 📈 Complaint Overview")
+    # --------------------------------------------------------
+    # CHART DATA
+    # --------------------------------------------------------
 
     categories = {}
+
     for row in rows:
-        category = safe_value(row.get("category"), "Unknown")
+        category = safe_value(
+            row.get("category"),
+            "Unknown"
+        )
         categories[category] = categories.get(category, 0) + 1
 
-    if categories:
-        st.bar_chart(categories)
+    status_data = {
+        "Resolved": resolved,
+        "Active": active,
+    }
+
+    risk_data = {
+        "High": high_risk,
+        "Medium": medium_risk,
+        "Low": low_risk,
+    }
+
+    priority_data = {}
+
+    for row in rows:
+        priority = safe_value(
+            row.get("priority"),
+            "Unknown"
+        )
+        priority_data[priority] = (
+            priority_data.get(priority, 0) + 1
+        )
+
+    technician_data = {}
+
+    for row in rows:
+        technician = safe_value(
+            row.get("technician_name"),
+            "Unassigned"
+        )
+        technician_data[technician] = (
+            technician_data.get(technician, 0) + 1
+        )
+
+    # --------------------------------------------------------
+    # ANALYTICS
+    # --------------------------------------------------------
+
+    st.markdown("### 📈 AI-Powered Facilities Analytics")
+
+    col1, col2 = st.columns(2)
+
+    # Complaint Status Donut
+    with col1:
+        st.markdown("#### 🎯 Complaint Status")
+
+        fig_status = go.Figure(
+            data=[
+                go.Pie(
+                    labels=list(status_data.keys()),
+                    values=list(status_data.values()),
+                    hole=0.62,
+                    textinfo="label+percent",
+                    hovertemplate=(
+                        "<b>%{label}</b><br>"
+                        "Complaints: %{value}<br>"
+                        "Share: %{percent}"
+                        "<extra></extra>"
+                    ),
+                )
+            ]
+        )
+
+        fig_status.update_layout(
+            height=330,
+            margin=dict(l=10, r=10, t=20, b=20),
+            showlegend=True,
+            legend=dict(orientation="h", y=-0.05),
+        )
+
+        st.plotly_chart(
+            fig_status,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    # Resolution Gauge
+    with col2:
+        st.markdown("#### ✅ Resolution Performance")
+
+        gauge = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=resolution_rate,
+                number={
+                    "suffix": "%",
+                    "font": {"size": 42},
+                },
+                title={"text": "Resolution Rate"},
+                gauge={
+                    "axis": {"range": [0, 100]},
+                    "bar": {"thickness": 0.25},
+                    "steps": [
+                        {"range": [0, 50]},
+                        {"range": [50, 80]},
+                        {"range": [80, 100]},
+                    ],
+                    "threshold": {
+                        "line": {"width": 4},
+                        "thickness": 0.75,
+                        "value": resolution_rate,
+                    },
+                },
+            )
+        )
+
+        gauge.update_layout(
+            height=330,
+            margin=dict(l=20, r=20, t=40, b=20),
+        )
+
+        st.plotly_chart(
+            gauge,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    # Risk + Category
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### 🚨 AI Risk Assessment")
+
+        fig_risk = go.Figure(
+            data=[
+                go.Pie(
+                    labels=list(risk_data.keys()),
+                    values=list(risk_data.values()),
+                    hole=0.60,
+                    textinfo="label+value",
+                    hovertemplate=(
+                        "<b>%{label}</b><br>"
+                        "Complaints: %{value}<br>"
+                        "Share: %{percent}"
+                        "<extra></extra>"
+                    ),
+                )
+            ]
+        )
+
+        fig_risk.update_layout(
+            height=330,
+            margin=dict(l=10, r=10, t=20, b=20),
+            legend=dict(orientation="h", y=-0.05),
+        )
+
+        st.plotly_chart(
+            fig_risk,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    with col2:
+        st.markdown("#### 🛠️ Complaint Categories")
+
+        fig_category = go.Figure(
+            data=[
+                go.Pie(
+                    labels=list(categories.keys()),
+                    values=list(categories.values()),
+                    hole=0.55,
+                    textinfo="label+value",
+                    hovertemplate=(
+                        "<b>%{label}</b><br>"
+                        "Complaints: %{value}<br>"
+                        "Share: %{percent}"
+                        "<extra></extra>"
+                    ),
+                )
+            ]
+        )
+
+        fig_category.update_layout(
+            height=330,
+            margin=dict(l=10, r=10, t=20, b=20),
+            legend=dict(orientation="h", y=-0.05),
+        )
+
+        st.plotly_chart(
+            fig_category,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    # Priority + Technician workload
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### ⚡ Priority Distribution")
+
+        fig_priority = go.Figure(
+            data=[
+                go.Bar(
+                    x=list(priority_data.keys()),
+                    y=list(priority_data.values()),
+                    text=list(priority_data.values()),
+                    textposition="auto",
+                )
+            ]
+        )
+
+        fig_priority.update_layout(
+            height=330,
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis_title="Priority",
+            yaxis_title="Complaints",
+        )
+
+        st.plotly_chart(
+            fig_priority,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    with col2:
+        st.markdown("#### 👨‍🔧 Technician Workload")
+
+        fig_technician = go.Figure(
+            data=[
+                go.Bar(
+                    x=list(technician_data.values()),
+                    y=list(technician_data.keys()),
+                    orientation="h",
+                    text=list(technician_data.values()),
+                    textposition="auto",
+                )
+            ]
+        )
+
+        fig_technician.update_layout(
+            height=330,
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis_title="Assigned Complaints",
+            yaxis_title="Technician",
+        )
+
+        st.plotly_chart(
+            fig_technician,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    # --------------------------------------------------------
+    # COMPLAINT OVERVIEW TABLE
+    # --------------------------------------------------------
+
+    st.markdown("### 📊 Complaint Overview")
+
+    overview_data = []
+
+    for row in rows:
+        overview_data.append(
+            {
+                "Category": safe_value(
+                    row.get("category"),
+                    "Unknown"
+                ),
+                "Risk": safe_value(
+                    row.get("risk"),
+                    "Unknown"
+                ),
+                "Priority": safe_value(
+                    row.get("priority"),
+                    "Unknown"
+                ),
+                "Status": safe_value(
+                    row.get("status"),
+                    "Unknown"
+                ),
+            }
+        )
+
+    if overview_data:
+        st.dataframe(
+            overview_data,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # --------------------------------------------------------
+    # LATEST COMPLAINTS
+    # --------------------------------------------------------
 
     st.markdown("### 🛠️ Latest Complaints")
 
@@ -1240,6 +1575,16 @@ def manager_dashboard():
             st.write(
                 f"**Resolved:** "
                 f"{safe_value(row.get('resolved_at'))}"
+            )
+
+            st.write(
+                f"**Risk:** "
+                f"{safe_value(row.get('risk'))}"
+            )
+
+            st.write(
+                f"**Priority:** "
+                f"{safe_value(row.get('priority'))}"
             )
 
             if row.get("resolution_report"):
