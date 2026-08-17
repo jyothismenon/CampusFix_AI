@@ -42,7 +42,8 @@ if "page" not in st.session_state:
 
 def get_user_by_id(user_id):
     import sqlite3
-    conn_obj = sqlite3.connect("campusfix.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "campusfix.db")
+    conn_obj = sqlite3.connect(db_path)
     conn_obj.row_factory = sqlite3.Row
     c = conn_obj.cursor()
     r = c.execute(
@@ -54,11 +55,17 @@ def get_user_by_id(user_id):
         return dict(r)
     return None
 
-# Restore session from cookie if available
+# Restore session after browser refresh.
+# Cookie is preferred; query parameter is a fallback for browsers where
+# Streamlit does not immediately expose the cookie after a refresh.
 if st.session_state["user"] is None:
     cookie_user_id = st.context.cookies.get("campusfix_user_id")
-    if cookie_user_id:
-        restored = get_user_by_id(cookie_user_id)
+    query_user_id = st.query_params.get("user_id")
+
+    restore_user_id = cookie_user_id or query_user_id
+
+    if restore_user_id:
+        restored = get_user_by_id(restore_user_id)
         if restored:
             st.session_state["user"] = restored
 
@@ -491,6 +498,7 @@ st.markdown(
 def logout():
     st.session_state["user"] = None
     st.session_state.page = "Dashboard"
+    st.query_params.clear()
     st.html("""
     <script>
     document.cookie = "campusfix_user_id=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Strict";
@@ -742,6 +750,7 @@ if st.session_state["user"] is None:
                 if user:
                     st.session_state["user"] = user
                     st.session_state.page = "Dashboard"
+                    st.query_params["user_id"] = user["id"]
                     st.html(f"""
                     <script>
                     document.cookie = "campusfix_user_id={user['id']}; path=/; max-age=86400; SameSite=Strict";
@@ -1037,14 +1046,25 @@ def my_complaints():
 # ============================================================
 
 def technician_dashboard():
+
     rows = get_assigned_complaints(user["id"])
 
     total = len(rows)
+
     active = len(
-        [r for r in rows if r["status"] != "Resolved"]
+        [
+            r for r in rows
+            if str(r.get("status", "")).strip().lower()
+            not in ("resolved", "closed")
+        ]
     )
+
     resolved = len(
-        [r for r in rows if r["status"] == "Resolved"]
+        [
+            r for r in rows
+            if str(r.get("status", "")).strip().lower()
+            in ("resolved", "closed")
+        ]
     )
 
     st.markdown(
@@ -1071,6 +1091,24 @@ def technician_dashboard():
     with c:
         metric("Resolved", resolved, "✅")
 
+    # --------------------------------------------------------
+    # SHOW A PERSISTENT UPDATE MESSAGE AFTER SAVE
+    # --------------------------------------------------------
+
+    if st.session_state.get("work_order_message"):
+        message = st.session_state.pop("work_order_message")
+
+        if message.get("status") == "Resolved":
+            st.success(
+                f"✅ {message.get('text', 'Problem resolved successfully.')}"
+            )
+            st.info(
+                "The resolution has been recorded and is now visible "
+                "to the faculty member and Facility Manager."
+            )
+        else:
+            st.success(message.get("text", "Work order updated successfully."))
+
     st.divider()
 
     if not rows:
@@ -1085,43 +1123,94 @@ def technician_dashboard():
             f"🔧 Work Order — {safe_value(row.get('id'))}"
         ):
 
-            st.write(
-                f"**Location:** {safe_value(row.get('location'))}"
+            # ------------------------------------------------
+            # COMPLETE COMPLAINT INFORMATION
+            # ------------------------------------------------
+
+            st.markdown("### 📝 Complaint Description")
+
+            description = safe_value(
+                row.get("description"),
+                "No description available.",
+            )
+
+            st.markdown(
+                f"""
+                <div style="
+                    background:#131B2E;
+                    border:1px solid #334155;
+                    border-left:4px solid #3B82F6;
+                    border-radius:12px;
+                    padding:16px;
+                    margin-bottom:18px;
+                    color:#E2E8F0;
+                    line-height:1.6;
+                ">
+                    {description}
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
             st.write(
-                f"**Category:** {safe_value(row.get('category'))}"
+                f"**Location:** "
+                f"{safe_value(row.get('location'))}"
             )
 
             st.write(
-                f"**Risk:** {safe_value(row.get('risk'))}"
+                f"**Category:** "
+                f"{safe_value(row.get('category'))}"
             )
 
             st.write(
-                f"**Priority:** {safe_value(row.get('priority'))}"
+                f"**AI Risk:** "
+                f"{safe_value(row.get('risk'))}"
             )
 
             st.write(
-                f"**Current Status:** {safe_value(row.get('status'))}"
+                f"**AI Priority:** "
+                f"{safe_value(row.get('priority'))}"
+            )
+
+            st.write(
+                f"**Current Status:** "
+                f"{safe_value(row.get('status'))}"
+            )
+
+            if row.get("created_at"):
+                st.write(
+                    f"**Reported:** "
+                    f"{safe_value(row.get('created_at'))}"
+                )
+
+            if row.get("resolved_at"):
+                st.write(
+                    f"**Resolved At:** "
+                    f"{safe_value(row.get('resolved_at'))}"
+                )
+
+            # ------------------------------------------------
+            # STATUS UPDATE
+            # ------------------------------------------------
+
+            status_options = [
+                "Assigned",
+                "In Progress",
+                "Resolved",
+            ]
+
+            current_status = row.get("status")
+
+            current_index = (
+                status_options.index(current_status)
+                if current_status in status_options
+                else 0
             )
 
             status = st.selectbox(
                 "Update Status",
-                [
-                    "Assigned",
-                    "In Progress",
-                    "Resolved",
-                ],
-                index=(
-                    [
-                        "Assigned",
-                        "In Progress",
-                        "Resolved",
-                    ].index(row["status"])
-                    if row["status"] in
-                    ["Assigned", "In Progress", "Resolved"]
-                    else 0
-                ),
+                status_options,
+                index=current_index,
                 key=f"status_{row['id']}",
             )
 
@@ -1144,18 +1233,40 @@ def technician_dashboard():
                 use_container_width=True,
             ):
 
-                update_work_order(
-                    row["id"],
-                    status,
-                    report,
-                )
+                try:
 
-                st.success(
-                    "Work order updated successfully."
-                )
+                    update_work_order(
+                        row["id"],
+                        status,
+                        report,
+                    )
 
-                st.rerun()
+                    # Save a flash message before rerun.
+                    # st.success() immediately followed by st.rerun()
+                    # disappears because Streamlit rebuilds the page.
+                    if status == "Resolved":
+                        st.session_state["work_order_message"] = {
+                            "status": "Resolved",
+                            "text": (
+                                f"Work order {row['id']} has been marked "
+                                "as Resolved successfully."
+                            ),
+                        }
+                    else:
+                        st.session_state["work_order_message"] = {
+                            "status": status,
+                            "text": (
+                                f"Work order {row['id']} updated to "
+                                f"{status} successfully."
+                            ),
+                        }
 
+                    st.rerun()
+
+                except Exception as exc:
+                    st.error(
+                        f"Unable to update work order: {exc}"
+                    )
 
 # ============================================================
 # FACILITY MANAGER DASHBOARD
@@ -1166,7 +1277,7 @@ def manager_dashboard():
     rows = get_all_complaints()
 
     # --------------------------------------------------------
-    # BASIC COUNTS
+    # CORE KPIs
     # --------------------------------------------------------
 
     total = len(rows)
@@ -1210,8 +1321,7 @@ def manager_dashboard():
 
     resolution_rate = (
         round((resolved / total) * 100, 1)
-        if total > 0
-        else 0
+        if total else 0
     )
 
     # --------------------------------------------------------
@@ -1219,22 +1329,20 @@ def manager_dashboard():
     # --------------------------------------------------------
 
     st.markdown(
-        '<div class="section-title">'
-        '📊 Facility Management Dashboard'
-        '</div>',
+        '<div class="section-title">📊 Facility Management Dashboard</div>',
         unsafe_allow_html=True,
     )
 
     st.markdown(
         '<div class="section-caption">'
-        'Central monitoring of complaints, AI risk assessment, '
-        'priority, technician allocation and maintenance resolution.'
+        'Central command centre for AI-assisted complaint monitoring, '
+        'risk assessment, technician workload and resolution performance.'
         '</div>',
         unsafe_allow_html=True,
     )
 
     # --------------------------------------------------------
-    # TOP KPI CARDS
+    # KPI CARDS
     # --------------------------------------------------------
 
     a, b, c, d = st.columns(4)
@@ -1251,77 +1359,82 @@ def manager_dashboard():
     with d:
         metric("High Risk", high_risk, "🚨")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
     if not rows:
+        st.divider()
         st.info("No complaints are available.")
         return
 
     # --------------------------------------------------------
-    # CHART DATA
+    # PREPARE ANALYTICS
     # --------------------------------------------------------
 
     categories = {}
+    priorities = {}
+    risks = {}
+    technicians = {}
+    status_counts = {
+        "Resolved": 0,
+        "Active": 0,
+    }
 
     for row in rows:
+
         category = safe_value(
             row.get("category"),
-            "Unknown"
+            "Unknown",
         )
-        categories[category] = categories.get(category, 0) + 1
+        categories[category] = (
+            categories.get(category, 0) + 1
+        )
 
-    status_data = {
-        "Resolved": resolved,
-        "Active": active,
-    }
-
-    risk_data = {
-        "High": high_risk,
-        "Medium": medium_risk,
-        "Low": low_risk,
-    }
-
-    priority_data = {}
-
-    for row in rows:
         priority = safe_value(
             row.get("priority"),
-            "Unknown"
+            "Unknown",
         )
-        priority_data[priority] = (
-            priority_data.get(priority, 0) + 1
+        priorities[priority] = (
+            priorities.get(priority, 0) + 1
         )
 
-    technician_data = {}
+        risk = safe_value(
+            row.get("risk"),
+            "Unknown",
+        )
+        risks[risk] = risks.get(risk, 0) + 1
 
-    for row in rows:
         technician = safe_value(
             row.get("technician_name"),
-            "Unassigned"
+            "Unassigned",
         )
-        technician_data[technician] = (
-            technician_data.get(technician, 0) + 1
+        technicians[technician] = (
+            technicians.get(technician, 0) + 1
         )
+
+    status_counts["Resolved"] = resolved
+    status_counts["Active"] = active
 
     # --------------------------------------------------------
-    # ANALYTICS
+    # DASHBOARD ANALYTICS
     # --------------------------------------------------------
 
-    st.markdown("### 📈 AI-Powered Facilities Analytics")
+    st.divider()
 
-    col1, col2 = st.columns(2)
+    st.markdown("### 📈 Facilities Intelligence Overview")
 
-    # Complaint Status Donut
-    with col1:
+    # Row 1: Status donut + resolution gauge
+    chart1, chart2 = st.columns(2)
+
+    with chart1:
+
         st.markdown("#### 🎯 Complaint Status")
 
         fig_status = go.Figure(
             data=[
                 go.Pie(
-                    labels=list(status_data.keys()),
-                    values=list(status_data.values()),
-                    hole=0.62,
+                    labels=list(status_counts.keys()),
+                    values=list(status_counts.values()),
+                    hole=0.64,
                     textinfo="label+percent",
+                    textfont=dict(size=13),
                     hovertemplate=(
                         "<b>%{label}</b><br>"
                         "Complaints: %{value}<br>"
@@ -1333,10 +1446,14 @@ def manager_dashboard():
         )
 
         fig_status.update_layout(
-            height=330,
+            height=350,
             margin=dict(l=10, r=10, t=20, b=20),
-            showlegend=True,
-            legend=dict(orientation="h", y=-0.05),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            legend=dict(
+                orientation="h",
+                y=-0.05,
+            ),
         )
 
         st.plotly_chart(
@@ -1345,11 +1462,11 @@ def manager_dashboard():
             config={"displayModeBar": False},
         )
 
-    # Resolution Gauge
-    with col2:
+    with chart2:
+
         st.markdown("#### ✅ Resolution Performance")
 
-        gauge = go.Figure(
+        fig_gauge = go.Figure(
             go.Indicator(
                 mode="gauge+number",
                 value=resolution_rate,
@@ -1357,17 +1474,26 @@ def manager_dashboard():
                     "suffix": "%",
                     "font": {"size": 42},
                 },
-                title={"text": "Resolution Rate"},
+                title={
+                    "text": "Overall Resolution Rate"
+                },
                 gauge={
-                    "axis": {"range": [0, 100]},
-                    "bar": {"thickness": 0.25},
+                    "axis": {
+                        "range": [0, 100],
+                        "ticksuffix": "%",
+                    },
+                    "bar": {
+                        "thickness": 0.28
+                    },
                     "steps": [
                         {"range": [0, 50]},
                         {"range": [50, 80]},
                         {"range": [80, 100]},
                     ],
                     "threshold": {
-                        "line": {"width": 4},
+                        "line": {
+                            "width": 4
+                        },
                         "thickness": 0.75,
                         "value": resolution_rate,
                     },
@@ -1375,29 +1501,31 @@ def manager_dashboard():
             )
         )
 
-        gauge.update_layout(
-            height=330,
+        fig_gauge.update_layout(
+            height=350,
             margin=dict(l=20, r=20, t=40, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
         )
 
         st.plotly_chart(
-            gauge,
+            fig_gauge,
             use_container_width=True,
             config={"displayModeBar": False},
         )
 
-    # Risk + Category
-    col1, col2 = st.columns(2)
+    # Row 2: Risk + category
+    chart3, chart4 = st.columns(2)
 
-    with col1:
-        st.markdown("#### 🚨 AI Risk Assessment")
+    with chart3:
+
+        st.markdown("#### 🚨 AI Risk Distribution")
 
         fig_risk = go.Figure(
             data=[
                 go.Pie(
-                    labels=list(risk_data.keys()),
-                    values=list(risk_data.values()),
-                    hole=0.60,
+                    labels=list(risks.keys()),
+                    values=list(risks.values()),
+                    hole=0.58,
                     textinfo="label+value",
                     hovertemplate=(
                         "<b>%{label}</b><br>"
@@ -1410,9 +1538,14 @@ def manager_dashboard():
         )
 
         fig_risk.update_layout(
-            height=330,
+            height=350,
             margin=dict(l=10, r=10, t=20, b=20),
-            legend=dict(orientation="h", y=-0.05),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            legend=dict(
+                orientation="h",
+                y=-0.05,
+            ),
         )
 
         st.plotly_chart(
@@ -1421,7 +1554,8 @@ def manager_dashboard():
             config={"displayModeBar": False},
         )
 
-    with col2:
+    with chart4:
+
         st.markdown("#### 🛠️ Complaint Categories")
 
         fig_category = go.Figure(
@@ -1429,7 +1563,7 @@ def manager_dashboard():
                 go.Pie(
                     labels=list(categories.keys()),
                     values=list(categories.values()),
-                    hole=0.55,
+                    hole=0.58,
                     textinfo="label+value",
                     hovertemplate=(
                         "<b>%{label}</b><br>"
@@ -1442,9 +1576,14 @@ def manager_dashboard():
         )
 
         fig_category.update_layout(
-            height=330,
+            height=350,
             margin=dict(l=10, r=10, t=20, b=20),
-            legend=dict(orientation="h", y=-0.05),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            legend=dict(
+                orientation="h",
+                y=-0.05,
+            ),
         )
 
         st.plotly_chart(
@@ -1453,26 +1592,50 @@ def manager_dashboard():
             config={"displayModeBar": False},
         )
 
-    # Priority + Technician workload
-    col1, col2 = st.columns(2)
+    # Row 3: Priority + technician workload
+    chart5, chart6 = st.columns(2)
 
-    with col1:
+    with chart5:
+
         st.markdown("#### ⚡ Priority Distribution")
+
+        priority_order = [
+            "High",
+            "Medium",
+            "Low",
+        ]
+
+        ordered_priorities = {
+            key: priorities[key]
+            for key in priority_order
+            if key in priorities
+        }
+
+        for key, value in priorities.items():
+            if key not in ordered_priorities:
+                ordered_priorities[key] = value
 
         fig_priority = go.Figure(
             data=[
                 go.Bar(
-                    x=list(priority_data.keys()),
-                    y=list(priority_data.values()),
-                    text=list(priority_data.values()),
+                    x=list(ordered_priorities.keys()),
+                    y=list(ordered_priorities.values()),
+                    text=list(ordered_priorities.values()),
                     textposition="auto",
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "Complaints: %{y}"
+                        "<extra></extra>"
+                    ),
                 )
             ]
         )
 
         fig_priority.update_layout(
-            height=330,
-            margin=dict(l=20, r=20, t=20, b=20),
+            height=350,
+            margin=dict(l=30, r=20, t=20, b=40),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             xaxis_title="Priority",
             yaxis_title="Complaints",
         )
@@ -1483,24 +1646,39 @@ def manager_dashboard():
             config={"displayModeBar": False},
         )
 
-    with col2:
+    with chart6:
+
         st.markdown("#### 👨‍🔧 Technician Workload")
+
+        # Sort technicians by workload for a management-friendly view
+        technician_items = sorted(
+            technicians.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
 
         fig_technician = go.Figure(
             data=[
                 go.Bar(
-                    x=list(technician_data.values()),
-                    y=list(technician_data.keys()),
+                    x=[x[1] for x in technician_items],
+                    y=[x[0] for x in technician_items],
                     orientation="h",
-                    text=list(technician_data.values()),
+                    text=[x[1] for x in technician_items],
                     textposition="auto",
+                    hovertemplate=(
+                        "<b>%{y}</b><br>"
+                        "Assigned Complaints: %{x}"
+                        "<extra></extra>"
+                    ),
                 )
             ]
         )
 
         fig_technician.update_layout(
-            height=330,
-            margin=dict(l=20, r=20, t=20, b=20),
+            height=350,
+            margin=dict(l=30, r=20, t=20, b=40),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             xaxis_title="Assigned Complaints",
             yaxis_title="Technician",
         )
@@ -1512,7 +1690,40 @@ def manager_dashboard():
         )
 
     # --------------------------------------------------------
-    # COMPLAINT OVERVIEW TABLE
+    # MANAGEMENT SNAPSHOT
+    # --------------------------------------------------------
+
+    st.markdown("### 🧭 Management Snapshot")
+
+    s1, s2, s3, s4 = st.columns(4)
+
+    with s1:
+        st.metric(
+            "Resolution Rate",
+            f"{resolution_rate}%",
+        )
+
+    with s2:
+        st.metric(
+            "Medium Risk",
+            medium_risk,
+        )
+
+    with s3:
+        st.metric(
+            "Low Risk",
+            low_risk,
+        )
+
+    with s4:
+        unassigned = technicians.get("Unassigned", 0)
+        st.metric(
+            "Unassigned",
+            unassigned,
+        )
+
+    # --------------------------------------------------------
+    # COMPLAINT OVERVIEW
     # --------------------------------------------------------
 
     st.markdown("### 📊 Complaint Overview")
@@ -1522,21 +1733,29 @@ def manager_dashboard():
     for row in rows:
         overview_data.append(
             {
+                "Complaint ID": safe_value(
+                    row.get("id"),
+                    "Unknown",
+                ),
                 "Category": safe_value(
                     row.get("category"),
-                    "Unknown"
+                    "Unknown",
                 ),
                 "Risk": safe_value(
                     row.get("risk"),
-                    "Unknown"
+                    "Unknown",
                 ),
                 "Priority": safe_value(
                     row.get("priority"),
-                    "Unknown"
+                    "Unknown",
                 ),
                 "Status": safe_value(
                     row.get("status"),
-                    "Unknown"
+                    "Unknown",
+                ),
+                "Technician": safe_value(
+                    row.get("technician_name"),
+                    "Unassigned",
                 ),
             }
         )
@@ -1575,16 +1794,6 @@ def manager_dashboard():
             st.write(
                 f"**Resolved:** "
                 f"{safe_value(row.get('resolved_at'))}"
-            )
-
-            st.write(
-                f"**Risk:** "
-                f"{safe_value(row.get('risk'))}"
-            )
-
-            st.write(
-                f"**Priority:** "
-                f"{safe_value(row.get('priority'))}"
             )
 
             if row.get("resolution_report"):
