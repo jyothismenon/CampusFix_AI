@@ -133,6 +133,19 @@ def init_db():
     );
     """)
 
+    cursor.execute("PRAGMA table_info(parts_requests)")
+    pr_columns = [row[1] for row in cursor.fetchall()]
+    
+    if pr_columns:
+        if "price_checked_at" not in pr_columns:
+            c.execute("ALTER TABLE parts_requests ADD COLUMN price_checked_at TEXT")
+        if "price_source" not in pr_columns:
+            c.execute("ALTER TABLE parts_requests ADD COLUMN price_source TEXT")
+        if "product_url" not in pr_columns:
+            c.execute("ALTER TABLE parts_requests ADD COLUMN product_url TEXT")
+        if "online_price" not in pr_columns:
+            c.execute("ALTER TABLE parts_requests ADD COLUMN online_price REAL")
+
     # ========================================================
     # DEMO USERS
     # ========================================================
@@ -855,13 +868,14 @@ def create_parts_request(complaint_id, technician_id, part_name, normalized_part
         INSERT INTO parts_requests (
             complaint_id, technician_id, part_name, normalized_part_name, quantity,
             purchase_method, offline_expected_price, selected_online_price,
-            selected_source, selected_product_url, status, requested_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+            selected_source, selected_product_url, status, requested_at,
+            price_checked_at, price_source, product_url, online_price
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?)
         """,
         (
             complaint_id, technician_id, part_name, normalized_part_name, quantity,
             purchase_method, offline_expected_price, selected_online_price,
-            selected_source, selected_product_url, now
+            selected_source, selected_product_url, now, now, selected_source, selected_product_url, selected_online_price
         )
     )
     # Update complaints status to 'Waiting for Manager Approval'
@@ -876,6 +890,7 @@ def create_parts_request(complaint_id, technician_id, part_name, normalized_part
     )
     c.commit()
     c.close()
+
 
 def get_parts_requests_by_complaint(complaint_id):
     c = conn()

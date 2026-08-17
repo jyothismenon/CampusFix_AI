@@ -1409,18 +1409,33 @@ def technician_dashboard():
                     if part_name_input.strip():
                         # AI Part Identification
                         normalized_name = normalize_part_name(part_name_input)
-                        st.markdown(
-                            f"""
-                            <div style="background-color: #131B2E; border: 1px solid #3B82F6; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
-                                <span style="color: #60A5FA; font-weight: bold;">🤖 AI Part Identification</span><br>
-                                <b>Identified Part:</b> {normalized_name}
-                            </div>
-                            """,
-                            unsafe_allow_html=True
+                        
+                        if normalized_name == "Part identification uncertain":
+                            st.warning("⚠️ Part identification uncertain")
+                            
+                        # Allow technician to edit/confirm normalized term
+                        search_term = st.text_input(
+                            "Confirm / Edit Normalized Part Name for Live Price Search",
+                            value=part_name_input if normalized_name == "Part identification uncertain" else normalized_name,
+                            key=f"search_term_edit_{row['id']}"
                         )
                         
-                        # Online price options search
-                        online_options = search_online_prices(normalized_name)
+                        st.markdown("### 🔎 Live Price Search")
+                        
+                        online_options = []
+                        search_error_msg = None
+                        search_configured = True
+                        
+                        if search_term.strip():
+                            try:
+                                with st.spinner("Searching current web results..."):
+                                    online_options = search_online_prices(search_term.strip())
+                            except ValueError as ve:
+                                search_configured = False
+                                search_error_msg = str(ve)
+                            except Exception as e:
+                                search_configured = True
+                                search_error_msg = "Live price search temporarily unavailable."
                         
                         purchase_method = st.radio(
                             "Purchase Method",
@@ -1433,15 +1448,39 @@ def technician_dashboard():
                         offline_store = ""
                         
                         if purchase_method == "Online Purchase":
-                            if online_options:
-                                st.markdown("#### 💰 Available Online Sources")
+                            if not search_configured:
+                                st.error("Live price search is not configured. Add SEARCH_API_KEY in Streamlit Secrets.")
+                                purchase_method = "Offline / Physical Store"
+                            elif search_error_msg:
+                                st.error(search_error_msg)
+                                purchase_method = "Offline / Physical Store"
+                            elif not online_options:
+                                st.warning("Live price search returned no results. Technician may enter expected offline price.")
+                                purchase_method = "Offline / Physical Store"
+                            else:
+                                # Show Lowest Price Highlight Card
+                                lowest_opt = online_options[0]
+                                st.markdown(
+                                    f"""
+                                    <div style="background-color: #112F20; border: 2px solid #10B981; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+                                        <span style="color: #10B981; font-weight: bold; font-size: 14px;">🟢 LOWEST PRICE</span><br>
+                                        <span style="font-size: 28px; font-weight: bold; color: #FFFFFF;">₹{lowest_opt['price']}</span><br>
+                                        <b>{lowest_opt['product_name']}</b><br>
+                                        Source: {lowest_opt['seller']}<br>
+                                        <a href="{lowest_opt['link']}" target="_blank" style="color: #10B981; font-weight: bold; text-decoration: underline;">[View Product]</a>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
+                                
+                                st.markdown("#### Other available options:")
                                 options_list = []
                                 for idx, opt in enumerate(online_options):
-                                    badge = " (Lowest Available Price)" if idx == 0 else ""
+                                    badge = " [Lowest Price]" if idx == 0 else ""
                                     options_list.append(f"{opt['seller']} — ₹{opt['price']}{badge}")
                                 
                                 selected_opt_str = st.radio(
-                                    "Select Recommended Online Source",
+                                    "Select Online Option",
                                     options_list,
                                     key=f"sel_online_{row['id']}"
                                 )
@@ -1449,20 +1488,13 @@ def technician_dashboard():
                                 selected_idx = options_list.index(selected_opt_str)
                                 selected_option = online_options[selected_idx]
                                 
-                                # Display all options for transparency
-                                for idx, opt in enumerate(online_options):
-                                    is_lowest = " **[Lowest Price]**" if idx == 0 else ""
-                                    st.markdown(
-                                        f"- {opt['seller']} — **₹{opt['price']}** | {opt['availability']} "
-                                        f"[Product Link]({opt['link']}){is_lowest}"
-                                    )
-                            else:
-                                st.warning("Online price information unavailable — technician may enter expected offline price.")
-                                purchase_method = "Offline / Physical Store"
-                        
+                                from database import local_now
+                                price_checked_at_str = local_now().strftime("%d-%b-%Y %I:%M %p") + " IST"
+                                st.caption(f"Price checked: {price_checked_at_str}. Online price is indicative and may change at the seller website.")
+                                
                         if purchase_method == "Offline / Physical Store":
                             offline_price = st.number_input(
-                                "Expected purchase price (₹)",
+                                "Expected offline purchase price (₹)",
                                 min_value=0.0,
                                 value=0.0,
                                 step=10.0,
@@ -1480,7 +1512,7 @@ def technician_dashboard():
                                     complaint_id=row["id"],
                                     technician_id=user["id"],
                                     part_name=part_name_input.strip(),
-                                    normalized_part_name=normalized_name,
+                                    normalized_part_name=search_term.strip() if search_term.strip() else normalized_name,
                                     quantity=int(part_qty),
                                     purchase_method="Online" if purchase_method == "Online Purchase" else "Offline",
                                     offline_expected_price=offline_price if purchase_method == "Offline / Physical Store" else None,
@@ -1775,6 +1807,25 @@ def manager_dashboard():
                         online_val = req["selected_online_price"]
                         offline_val = req["offline_expected_price"]
                         
+                        # Highlighting Comparison
+                        if online_val and offline_val:
+                            unit_diff = abs(offline_val - online_val)
+                            total_diff = unit_diff * req["quantity"]
+                            cheaper_side = "Online" if online_val < offline_val else "Offline"
+                            st.markdown(
+                                f"""
+                                <div style="background-color: #172237; border: 1px solid #334155; border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 14px;">
+                                    <span style="color: #60A5FA; font-weight: bold;">⚖️ Highlight Comparison:</span><br>
+                                    - Online lowest: <b>₹{online_val}</b> ({req['selected_source'] or 'Online Seller'})<br>
+                                    - Offline estimate: <b>₹{offline_val}</b><br>
+                                    - Potential difference: <b>₹{unit_diff:.2f} per unit</b><br>
+                                    - Quantity: <b>{req['quantity']}</b><br>
+                                    - Potential difference: <b>₹{total_diff:.2f} ({cheaper_side} is cheaper)</b>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                        
                         a_col, b_col = st.columns(2)
                         with a_col:
                             if online_val:
@@ -1833,6 +1884,7 @@ def manager_dashboard():
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error: {e}")
+
                                     
                 st.divider()
 

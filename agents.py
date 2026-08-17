@@ -179,12 +179,35 @@ def normalize_part_name(keywords):
     """
     Lightweight rule-based logic to extract and normalize
     the canonical part name from raw technician description text.
+    Handles key target campus procurement parts, formats them,
+    and returns 'Part identification uncertain' for ambiguous/generic queries.
     """
     if not keywords:
-        return ""
-    words = keywords.strip().split()
+        return "Part identification uncertain"
+    
+    t = keywords.strip().lower()
+    
+    # 1. Matches for specified standard campus procurement items
+    if "switch" in t and ("16" in t or "16a" in t or "amp" in t):
+        return "16A Modular Electrical Switch"
+        
+    if "capacitor" in t and ("2.5" in t or "uf" in t or "microfarad" in t or "µf" in t):
+        return "2.5 µF Ceiling Fan Capacitor"
+        
+    if "elbow" in t and "pvc" in t and ("1" in t or "one" in t or "inch" in t or "elbow 1" in t):
+        return "1 inch PVC Elbow"
+        
+    if "tube" in t and "light" in t and ("20w" in t or "20 w" in t or "20" in t):
+        return "20W LED Tube Light"
+        
+    # 2. Generic terms check
+    generic_terms = ["switch", "capacitor", "elbow", "light", "pipe", "tap", "bulb", "fan", "wire"]
+    if t in generic_terms or len(t.split()) <= 1:
+        return "Part identification uncertain"
+        
+    words = t.split()
     cleaned = []
-    # Strip quantity-like words or numbers (e.g. 1x, 2pcs, 10, etc.)
+    # Strip quantity indicators
     for w in words:
         wl = w.lower()
         if wl.endswith("pcs") or wl.endswith("pc") or wl.endswith("x") or wl.isdigit():
@@ -192,50 +215,19 @@ def normalize_part_name(keywords):
         cleaned.append(w)
     
     normalized = " ".join(cleaned).strip().title()
+    normalized = normalized.replace("Pvc", "PVC").replace("Led", "LED")
+    
     if not normalized:
-        normalized = keywords.strip().title()
+        return "Part identification uncertain"
     return normalized
 
 
 def search_online_prices(part_name):
     """
-    Search function containing real online prices, links, and stock statuses
-    for common campus facilities maintenance items to prevent fake data,
-    with safe fallback to None if search term is not matched.
+    Calls the search provider to query live web prices,
+    propagating exceptions to the UI level for customized failure alerts.
     """
-    catalog = {
-        "16A Modular Electrical Switch": [
-            {"seller": "Amazon Business", "price": 245, "availability": "In Stock", "link": "https://www.amazon.in/dp/B08DFGJKLD"},
-            {"seller": "Flipkart Wholesale", "price": 279, "availability": "In Stock", "link": "https://www.flipkart.com/product/16a-switch"},
-            {"seller": "Anchor Roma Store", "price": 310, "availability": "Limited Stock", "link": "https://www.anchor-roma.in/switches"}
-        ],
-        "LED Bulb 9W": [
-            {"seller": "Philips Lighting", "price": 99, "availability": "In Stock", "link": "https://www.amazon.in/dp/B07W8G7S99"},
-            {"seller": "Flipkart Retail", "price": 120, "availability": "In Stock", "link": "https://www.flipkart.com/product/philips-9w-led"},
-            {"seller": "Syska Store", "price": 115, "availability": "In Stock", "link": "https://syska.co.in/led-9w"}
-        ],
-        "PVC Pipe 1 Inch": [
-            {"seller": "Supreme Pipes", "price": 180, "availability": "In Stock", "link": "https://www.amazon.in/dp/B08HJ2928J"},
-            {"seller": "Astral Pipes Online", "price": 195, "availability": "In Stock", "link": "https://www.astralpipes.com/pvc-1inch"},
-            {"seller": "Local Hardware Depot", "price": 210, "availability": "In Stock", "link": "https://www.flipkart.com/product/supreme-pvc-pipe"}
-        ],
-        "Door Handle Stainless Steel": [
-            {"seller": "Godrej Locks Online", "price": 450, "availability": "In Stock", "link": "https://www.amazon.in/dp/B07T43KLMD"},
-            {"seller": "Flipkart Home Decor", "price": 499, "availability": "In Stock", "link": "https://www.flipkart.com/product/godrej-door-handle"},
-            {"seller": "Harrison Hardware", "price": 475, "availability": "In Stock", "link": "https://www.harrison.co.in/handle"}
-        ],
-        "Water Tap Brass": [
-            {"seller": "Jaquar Retailer", "price": 850, "availability": "In Stock", "link": "https://www.amazon.in/dp/B08DFGK91S"},
-            {"seller": "Cera Sanitaryware", "price": 890, "availability": "In Stock", "link": "https://www.cera-india.com/taps"},
-            {"seller": "Flipkart Bathing", "price": 920, "availability": "In Stock", "link": "https://www.flipkart.com/product/cera-tap-brass"}
-        ]
-    }
-    
-    norm = part_name.strip().lower()
-    for canonical_name, options in catalog.items():
-        if canonical_name.lower() in norm or norm in canonical_name.lower():
-            # Return sorted by price ascending as required
-            return sorted(options, key=lambda x: x["price"])
-            
-    return None
+    from search_provider import search_web_prices
+    return search_web_prices(part_name)
+
 
