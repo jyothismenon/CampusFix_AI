@@ -565,7 +565,12 @@ def header():
 
 
 def sidebar():
-    user = st.session_state["user"]
+    user = st.session_state.get("user")
+
+    if user is None:
+        return
+
+    role = user["role"]
 
     with st.sidebar:
         st.markdown("## 🛠️ CampusFix AI")
@@ -783,7 +788,8 @@ if st.session_state["user"] is None:
 # AUTHENTICATED APPLICATION
 # ============================================================
 
-sidebar()
+if st.session_state.get("user") is not None:
+    sidebar()
 show_banner()
 header()
 
