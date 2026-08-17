@@ -536,31 +536,129 @@ def show_banner():
 
 def header():
     user = st.session_state["user"]
+    role = user.get("role")
+    
+    # Define role-specific themes
+    if role == "Faculty":
+        primary_color = "#3B82F6"
+        rgba_accent = "rgba(59, 130, 246, 0.25)"
+        rgba_shadow = "rgba(59, 130, 246, 0.3)"
+        gradient = "linear-gradient(135deg, #1E3A8A, #3B82F6)"
+        banner_text = "👨‍🏫 EMPLOYEE WORKSPACE"
+        page_title = "👨‍🏫 Employee Workspace"
+        subtitle = "CampusFix AI — Facility Complaint Portal"
+        display_role = "Employee / Faculty"
+    elif role == "Technician":
+        primary_color = "#F59E0B"
+        rgba_accent = "rgba(245, 158, 11, 0.25)"
+        rgba_shadow = "rgba(245, 158, 11, 0.3)"
+        gradient = "linear-gradient(135deg, #78350F, #F59E0B)"
+        banner_text = "🛠️ TECHNICIAN WORK CENTER"
+        page_title = "🛠️ Technician Work Center"
+        subtitle = "CampusFix AI — Maintenance Operations"
+        display_role = "Technician"
+    elif role == "Facility Manager":
+        primary_color = "#8B5CF6"
+        rgba_accent = "rgba(139, 92, 246, 0.25)"
+        rgba_shadow = "rgba(139, 92, 246, 0.3)"
+        gradient = "linear-gradient(135deg, #4C1D95, #8B5CF6)"
+        banner_text = "📊 FACILITY MANAGER COMMAND CENTER"
+        page_title = "📊 Facility Manager Command Center"
+        subtitle = "CampusFix AI — Facilities Intelligence"
+        display_role = "Facility Manager"
+    else:
+        # Fallback
+        primary_color = "#3B82F6"
+        rgba_accent = "rgba(59, 130, 246, 0.25)"
+        rgba_shadow = "rgba(59, 130, 246, 0.3)"
+        gradient = "linear-gradient(135deg, #131B2E, #1E293B)"
+        banner_text = "🛠️ CAMPUSFIX AI WORKSPACE"
+        page_title = "CampusFix AI"
+        subtitle = "Intelligent Campus Facilities Management"
+        display_role = role
 
+    # Inject dynamic css style overrides for input fields, buttons, etc.
+    st.markdown(
+        f"""
+        <style>
+        div[data-baseweb="input"]:focus-within, div[data-baseweb="base-input"]:focus-within {{
+            border-color: {primary_color} !important;
+            box-shadow: 0 0 0 3px {rgba_accent} !important;
+        }}
+        div[data-baseweb="textarea"] textarea:focus {{
+            border-color: {primary_color} !important;
+            box-shadow: 0 0 0 3px {rgba_accent} !important;
+        }}
+        div.stButton > button:hover {{
+            border-color: {primary_color} !important;
+        }}
+        div[data-testid="stFormSubmitButton"] button {{
+            background: {gradient} !important;
+            color: #FFFFFF !important;
+            border: none !important;
+            box-shadow: 0 4px 12px {rgba_shadow} !important;
+        }}
+        div[data-testid="stFormSubmitButton"] button p {{
+            color: #FFFFFF !important;
+        }}
+        div[data-testid="stFormSubmitButton"] button:hover {{
+            background: {gradient} !important;
+            opacity: 0.9 !important;
+            box-shadow: 0 8px 20px {rgba_shadow} !important;
+        }}
+        /* Subtle card entrance animations */
+        .metric-card, .status-card, .complaint-card, .role-card {{
+            animation: cardEntrance 0.5s ease-out;
+        }}
+        @keyframes cardEntrance {{
+            from {{ opacity: 0; transform: translateY(15px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        /* Subtle progress transitions */
+        .timeline-step {{
+            transition: all 0.3s ease;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Render Header layout
     left, right = st.columns([3.3, 1.5])
 
     with left:
         st.markdown(
-            """
-            <div class="brand-bar">
-                <div class="brand-name">🛠️ CampusFix AI</div>
-                <div class="brand-caption">
-                    Intelligent Campus Facilities Management System
+            f"""
+            <div class="brand-bar role-banner-container" style="background: {gradient}; border-color: {primary_color}; animation: fadeInSlide 0.5s ease-out;">
+                <div style="font-size: 11px; font-weight: 800; letter-spacing: 1.5px; opacity: 0.85; color: #FFFFFF; text-transform: uppercase; margin-bottom: 4px;">
+                    {banner_text}
+                </div>
+                <div class="brand-name" style="font-size: 26px; font-weight: 800; color: #FFFFFF;">
+                    {page_title}
+                </div>
+                <div class="brand-caption" style="color: #F8FAFC !important; opacity: 0.9; font-size: 13px; margin-top: 2px;">
+                    {subtitle}
                 </div>
             </div>
+            <style>
+            @keyframes fadeInSlide {{
+                from {{ opacity: 0; transform: translateY(-10px); }}
+                to {{ opacity: 1; transform: translateY(0); }}
+            }}
+            </style>
             """,
             unsafe_allow_html=True,
         )
 
     with right:
-        col_user, col_logout = st.columns([2, 1])
+        col_user, col_logout = st.columns([2.2, 1])
         with col_user:
             st.markdown(
                 f"""
-                <div class="user-pill" style="padding: 8px 12px; font-size: 12px;">
-                    <b>{safe_value(user.get("name"))}</b><br>
-                    {safe_value(user.get("role"))}<br>
-                    <span style="color:#94A3B8">{safe_value(user.get("id"))}</span>
+                <div class="user-pill" style="padding: 10px 14px; font-size: 12px; border-left: 4px solid {primary_color}; animation: fadeInSlide 0.5s ease-out; background: #131B2E; border-top: 1px solid #1E293B; border-bottom: 1px solid #1E293B; border-right: 1px solid #1E293B; border-radius: 12px;">
+                    Logged in as: <b style="color: #FFFFFF;">{safe_value(user.get("name"))}</b><br>
+                    Role: <span style="color: {primary_color}; font-weight: 600;">{display_role}</span><br>
+                    ID: <span style="color:#94A3B8">{safe_value(user.get("id"))}</span>
                 </div>
                 """,
                 unsafe_allow_html=True,

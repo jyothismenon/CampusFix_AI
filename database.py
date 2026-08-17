@@ -87,6 +87,22 @@ def init_db():
 
     cursor = c.cursor()
 
+    cursor.execute("PRAGMA table_info(users)")
+    user_columns = [row[1] for row in cursor.fetchall()]
+    if "whatsapp_number" not in user_columns:
+        c.execute("ALTER TABLE users ADD COLUMN whatsapp_number TEXT")
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS whatsapp_notifications(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        complaint_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        recipient_type TEXT NOT NULL,
+        sent_at TEXT NOT NULL,
+        UNIQUE(complaint_id, event_type, recipient_type)
+    );
+    """)
+
     cursor.execute("PRAGMA table_info(complaints)")
     columns = [row[1] for row in cursor.fetchall()]
 
@@ -109,6 +125,7 @@ def init_db():
         c.execute(
             "ALTER TABLE complaints ADD COLUMN work_started_at TEXT"
         )
+
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS parts_requests(
@@ -266,9 +283,10 @@ def init_db():
                     role,
                     password_hash,
                     skill,
-                    availability
+                    availability,
+                    whatsapp_number
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     user_id,
@@ -411,6 +429,14 @@ def create_complaint(
     c.commit()
     c.close()
 
+    try:
+        from whatsapp import trigger_whatsapp_notification
+        trigger_whatsapp_notification(cid, "complaint_submitted")
+        if technician_id:
+            trigger_whatsapp_notification(cid, "technician_assigned")
+    except Exception:
+        pass
+
     return cid
 
 
@@ -537,6 +563,15 @@ def update_work_order(cid, status, report):
     c.commit()
     c.close()
 
+    try:
+        from whatsapp import trigger_whatsapp_notification
+        if status == "Resolved":
+            trigger_whatsapp_notification(cid, "resolved")
+        elif status == "Inspection in Progress":
+            trigger_whatsapp_notification(cid, "inspection_started")
+    except Exception:
+        pass
+
 
 # ============================================================
 # ACCEPT WORK ORDER
@@ -577,6 +612,12 @@ def accept_work_order(cid, tech_id):
 
     c.commit()
     c.close()
+
+    try:
+        from whatsapp import trigger_whatsapp_notification
+        trigger_whatsapp_notification(cid, "technician_accepts")
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -891,6 +932,12 @@ def create_parts_request(complaint_id, technician_id, part_name, normalized_part
     c.commit()
     c.close()
 
+    try:
+        from whatsapp import trigger_whatsapp_notification
+        trigger_whatsapp_notification(complaint_id, "parts_required")
+    except Exception:
+        pass
+
 
 def get_parts_requests_by_complaint(complaint_id):
     c = conn()
@@ -966,6 +1013,13 @@ def update_parts_request_status(request_id, status, recommendation=None, comment
     c.commit()
     c.close()
 
+    try:
+        from whatsapp import trigger_whatsapp_notification
+        event = "parts_approved" if status == "Approved" else "parts_rejected"
+        trigger_whatsapp_notification(complaint_id, event)
+    except Exception:
+        pass
+
 def start_work_on_complaint(complaint_id):
     c = conn()
     now = local_timestamp()
@@ -979,5 +1033,25 @@ def start_work_on_complaint(complaint_id):
         """,
         (now, now, complaint_id)
     )
+    # Check if there were any parts requests for this complaint
+    has_parts_requests = False
+    try:
+        res = c.execute("SELECT COUNT(*) FROM parts_requests WHERE complaint_id = ?", (complaint_id,)).fetchone()
+        if res and res[0] > 0:
+            has_parts_requests = True
+    except Exception:
+        pass
+
     c.commit()
     c.close()
+
+    try:
+        from whatsapp import trigger_whatsapp_notification
+        if not has_parts_requests:
+            # Inspection completed with no parts required
+            trigger_whatsapp_notification(complaint_id, "inspection_no_parts")
+        
+        # Work Started event
+        trigger_whatsapp_notification(complaint_id, "work_started")
+    except Exception:
+        pass
