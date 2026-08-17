@@ -105,6 +105,34 @@ def init_db():
             "ALTER TABLE complaints ADD COLUMN technician_status TEXT"
         )
 
+    if "work_started_at" not in columns:
+        c.execute(
+            "ALTER TABLE complaints ADD COLUMN work_started_at TEXT"
+        )
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS parts_requests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        complaint_id TEXT NOT NULL,
+        technician_id TEXT NOT NULL,
+        part_name TEXT NOT NULL,
+        normalized_part_name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        purchase_method TEXT NOT NULL,
+        offline_expected_price REAL,
+        selected_online_price REAL,
+        selected_source TEXT,
+        selected_product_url TEXT,
+        status TEXT DEFAULT 'Pending',
+        manager_recommendation TEXT,
+        manager_comment TEXT,
+        requested_at TEXT,
+        approved_at TEXT,
+        FOREIGN KEY(complaint_id) REFERENCES complaints(id),
+        FOREIGN KEY(technician_id) REFERENCES users(id)
+    );
+    """)
+
     # ========================================================
     # DEMO USERS
     # ========================================================
@@ -512,7 +540,7 @@ def accept_work_order(cid, tech_id):
         """
         UPDATE complaints
         SET
-            status = 'Accepted/In Progress',
+            status = 'Accepted',
             accepted_at = ?,
             last_status_update = ?
         WHERE id = ?
@@ -813,3 +841,128 @@ def get_users():
     c.close()
 
     return [dict(r) for r in rows]
+
+
+# ============================================================
+# PARTS REQUESTS MANAGEMENT
+# ============================================================
+
+def create_parts_request(complaint_id, technician_id, part_name, normalized_part_name, quantity, purchase_method, offline_expected_price=None, selected_online_price=None, selected_source=None, selected_product_url=None):
+    c = conn()
+    now = local_timestamp()
+    c.execute(
+        """
+        INSERT INTO parts_requests (
+            complaint_id, technician_id, part_name, normalized_part_name, quantity,
+            purchase_method, offline_expected_price, selected_online_price,
+            selected_source, selected_product_url, status, requested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+        """,
+        (
+            complaint_id, technician_id, part_name, normalized_part_name, quantity,
+            purchase_method, offline_expected_price, selected_online_price,
+            selected_source, selected_product_url, now
+        )
+    )
+    # Update complaints status to 'Waiting for Manager Approval'
+    c.execute(
+        """
+        UPDATE complaints
+        SET status = 'Waiting for Manager Approval',
+            last_status_update = ?
+        WHERE id = ?
+        """,
+        (now, complaint_id)
+    )
+    c.commit()
+    c.close()
+
+def get_parts_requests_by_complaint(complaint_id):
+    c = conn()
+    rows = c.execute(
+        "SELECT * FROM parts_requests WHERE complaint_id = ? ORDER BY requested_at DESC",
+        (complaint_id,)
+    ).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
+
+def get_pending_parts_requests():
+    c = conn()
+    rows = c.execute(
+        """
+        SELECT pr.*, c.location, u.name AS technician_name
+        FROM parts_requests pr
+        JOIN complaints c ON pr.complaint_id = c.id
+        JOIN users u ON pr.technician_id = u.id
+        WHERE pr.status = 'Pending'
+        ORDER BY pr.requested_at DESC
+        """
+    ).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
+
+def get_all_parts_requests():
+    c = conn()
+    rows = c.execute(
+        """
+        SELECT pr.*, u.name AS technician_name
+        FROM parts_requests pr
+        JOIN users u ON pr.technician_id = u.id
+        ORDER BY pr.requested_at DESC
+        """
+    ).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
+
+def update_parts_request_status(request_id, status, recommendation=None, comment=None):
+    c = conn()
+    now = local_timestamp()
+    
+    # Get complaint_id
+    req = c.execute("SELECT complaint_id FROM parts_requests WHERE id = ?", (request_id,)).fetchone()
+    if not req:
+        c.close()
+        return
+    complaint_id = req["complaint_id"]
+
+    c.execute(
+        """
+        UPDATE parts_requests
+        SET status = ?,
+            manager_recommendation = ?,
+            manager_comment = ?,
+            approved_at = ?
+        WHERE id = ?
+        """,
+        (status, recommendation, comment, now, request_id)
+    )
+
+    # Set complaint status depending on approved/rejected
+    complaint_status = "Parts Approved" if status == "Approved" else "Parts Rejected"
+    c.execute(
+        """
+        UPDATE complaints
+        SET status = ?,
+            last_status_update = ?
+        WHERE id = ?
+        """,
+        (complaint_status, now, complaint_id)
+    )
+    c.commit()
+    c.close()
+
+def start_work_on_complaint(complaint_id):
+    c = conn()
+    now = local_timestamp()
+    c.execute(
+        """
+        UPDATE complaints
+        SET status = 'Work Started',
+            work_started_at = ?,
+            last_status_update = ?
+        WHERE id = ?
+        """,
+        (now, now, complaint_id)
+    )
+    c.commit()
+    c.close()

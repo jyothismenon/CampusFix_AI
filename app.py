@@ -17,9 +17,15 @@ from database import (
     update_user_availability,
     delete_complaint,
     edit_complaint,
+    create_parts_request,
+    get_parts_requests_by_complaint,
+    get_pending_parts_requests,
+    get_all_parts_requests,
+    update_parts_request_status,
+    start_work_on_complaint,
 )
 
-from agents import analyze_complaint
+from agents import analyze_complaint, normalize_part_name, search_online_prices
 
 
 # ============================================================
@@ -639,6 +645,19 @@ def metric(label, value, icon):
 
 
 def complaint_card(row):
+    raw_status = safe_value(row.get("status"))
+    status_map = {
+        "Assigned": "🔵 Assigned",
+        "Accepted": "🟡 Accepted (Inspection Pending)",
+        "Inspection in Progress": "🟡 Inspection in Progress",
+        "Parts Required": "🟠 Parts Required",
+        "Waiting for Manager Approval": "🟣 Waiting Approval",
+        "Parts Approved": "🟢 Approved",
+        "Parts Rejected": "🔴 Rejected",
+        "Work Started": "🔵 Work Started",
+        "Resolved": "✅ Resolved",
+    }
+    display_status = status_map.get(raw_status, raw_status)
     st.markdown(
         f"""
         <div class="status-card">
@@ -654,7 +673,7 @@ def complaint_card(row):
                 {safe_value(row.get("location"))}
             </div>
             <div class="status-meta">
-                Status: <b>{safe_value(row.get("status"))}</b>
+                Status: <b>{display_status}</b>
                 &nbsp; · &nbsp;
                 Created: {safe_value(row.get("created_at"))}
             </div>
@@ -1009,6 +1028,68 @@ def submit_complaint():
 # FACULTY - MY COMPLAINTS
 # ============================================================
 
+def render_timeline(row):
+    status = row.get("status")
+    tech_name = row.get("technician_name") or "Technician"
+    
+    from database import get_parts_requests_by_complaint
+    reqs = get_parts_requests_by_complaint(row["id"])
+    has_parts = len(reqs) > 0
+    parts_status = reqs[0]["status"] if has_parts else None
+    
+    steps = []
+    
+    # 1. Assigned
+    steps.append(("Assigned", "✓ Assigned", True))
+    
+    # 2. Accepted
+    is_accepted = status in ["Accepted", "Inspection in Progress", "Waiting for Manager Approval", "Parts Approved", "Parts Rejected", "Work Started", "Resolved"]
+    steps.append(("Accepted", f"✓ Accepted by {tech_name}" if is_accepted else f"○ Accepted by {tech_name}", is_accepted))
+    
+    # 3. Inspection
+    is_inspected = status in ["Waiting for Manager Approval", "Parts Approved", "Parts Rejected", "Work Started", "Resolved"]
+    if status == "Inspection in Progress":
+        steps.append(("Inspection", "⏳ Inspection in Progress", True))
+    else:
+        steps.append(("Inspection", "✓ Inspection completed" if is_inspected else "○ Inspection Pending", is_inspected))
+        
+    # 4. Parts (if requested)
+    if has_parts:
+        steps.append(("PartsRequested", "✓ Parts requested", True))
+        if parts_status == "Pending":
+            steps.append(("Approval", "⏳ Waiting for Facility Manager approval", True))
+        elif parts_status == "Approved":
+            steps.append(("Approval", "✓ Parts Approved by Manager", True))
+        elif parts_status == "Rejected":
+            steps.append(("Approval", "❌ Parts Request Rejected by Manager", True))
+    
+    # 5. Work Started
+    is_started = status in ["Work Started", "Resolved"]
+    if status == "Work Started":
+        steps.append(("WorkStarted", "⏳ Work Started (In Progress)", True))
+    else:
+        steps.append(("WorkStarted", "✓ Work Started" if status == "Resolved" else "○ Work Started", is_started))
+        
+    # 6. Resolved
+    is_resolved = status == "Resolved"
+    steps.append(("Resolved", "✓ Resolved" if is_resolved else "○ Resolved", is_resolved))
+    
+    html_lines = []
+    for idx, (code, text, active) in enumerate(steps):
+        color = "#10B981" if "✓" in text else ("#F59E0B" if "⏳" in text else ("#EF4444" if "❌" in text else "#64748B"))
+        bold = "font-weight: bold; color: #FFFFFF !important;" if active else "color: #64748B !important;"
+        html_lines.append(f'<div style="{bold} margin: 4px 0;">{text}</div>')
+        if idx < len(steps) - 1:
+            html_lines.append('<div style="color:#475569; margin-left: 10px; font-weight: bold;">↓</div>')
+            
+    return f"""
+    <div style="background-color: #131B2E; border: 1px solid #1E293B; border-radius: 12px; padding: 16px; margin: 12px 0;">
+        <h4 style="margin-top:0; color:#FFFFFF !important;">📋 Complaint Progress Tracker</h4>
+        {''.join(html_lines)}
+    </div>
+    """
+
+
 def my_complaints():
     if st.button("← Back to Dashboard", key="my_complaints_back_btn"):
         st.session_state.page = "Dashboard"
@@ -1037,6 +1118,9 @@ def my_complaints():
             st.write(f"**Status:** {safe_value(row.get('status'))}")
             st.write(f"**Technician:** {safe_value(row.get('technician_name'))} ({safe_value(row.get('technician_id'))})")
             st.write(f"**Created:** {safe_value(row.get('created_at'))}")
+
+            # Display Timeline
+            st.markdown(render_timeline(row), unsafe_allow_html=True)
 
             if row.get("accepted_at"):
                 st.write(f"**Accepted/Started:** {row['accepted_at']}")
@@ -1257,15 +1341,229 @@ def technician_dashboard():
                     try:
                         accept_work_order(row["id"], user["id"])
                         st.session_state["work_order_message"] = {
-                            "status": "Accepted/In Progress",
-                            "text": f"Work order {row['id']} accepted. You are now Busy for this assignment."
+                            "status": "Accepted",
+                            "text": f"Work order {row['id']} accepted. Please proceed to Inspection."
                         }
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Unable to accept work order: {exc}")
 
-            elif current_status == "Accepted/In Progress":
-                start_time_str = row.get("last_status_update") or row.get("accepted_at")
+            elif current_status == "Accepted":
+                st.warning("🔍 Inspection Required")
+                if st.button("Start Inspection", key=f"start_inspect_{row['id']}", use_container_width=True):
+                    try:
+                        update_work_order(row["id"], "Inspection in Progress", "")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Error starting inspection: {exc}")
+
+            elif current_status == "Inspection in Progress":
+                st.info("🔍 Inspection in Progress")
+                st.markdown("**Are spare parts/materials required?**")
+                
+                parts_required = st.radio(
+                    "Are spare parts/materials required?",
+                    ["NO", "YES"],
+                    index=0,
+                    key=f"parts_required_{row['id']}",
+                    horizontal=True,
+                    label_visibility="collapsed"
+                )
+                
+                if parts_required == "NO":
+                    st.success("Inspection completed — No parts required.")
+                    if st.button("Start Work", key=f"start_work_noparts_{row['id']}", use_container_width=True):
+                        try:
+                            start_work_on_complaint(row["id"])
+                            st.session_state["work_order_message"] = {
+                                "status": "Work Started",
+                                "text": "Work has started. The 1-hour countdown is active."
+                            }
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Error starting work: {exc}")
+                            
+                else:
+                    st.markdown("### 🧰 Parts Required")
+                    
+                    part_name_input = st.text_input(
+                        "Part name / description",
+                        placeholder="e.g. 16A modular electrical switch",
+                        key=f"part_name_{row['id']}"
+                    )
+                    
+                    part_qty = st.number_input(
+                        "Quantity",
+                        min_value=1,
+                        value=1,
+                        step=1,
+                        key=f"part_qty_{row['id']}"
+                    )
+                    
+                    part_remarks = st.text_area(
+                        "Remarks (optional)",
+                        placeholder="Any additional remarks...",
+                        key=f"part_remarks_{row['id']}"
+                    )
+                    
+                    if part_name_input.strip():
+                        # AI Part Identification
+                        normalized_name = normalize_part_name(part_name_input)
+                        st.markdown(
+                            f"""
+                            <div style="background-color: #131B2E; border: 1px solid #3B82F6; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+                                <span style="color: #60A5FA; font-weight: bold;">🤖 AI Part Identification</span><br>
+                                <b>Identified Part:</b> {normalized_name}
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                        
+                        # Online price options search
+                        online_options = search_online_prices(normalized_name)
+                        
+                        purchase_method = st.radio(
+                            "Purchase Method",
+                            ["Online Purchase", "Offline / Physical Store"],
+                            key=f"purch_method_{row['id']}"
+                        )
+                        
+                        selected_option = None
+                        offline_price = 0.0
+                        offline_store = ""
+                        
+                        if purchase_method == "Online Purchase":
+                            if online_options:
+                                st.markdown("#### 💰 Available Online Sources")
+                                options_list = []
+                                for idx, opt in enumerate(online_options):
+                                    badge = " (Lowest Available Price)" if idx == 0 else ""
+                                    options_list.append(f"{opt['seller']} — ₹{opt['price']}{badge}")
+                                
+                                selected_opt_str = st.radio(
+                                    "Select Recommended Online Source",
+                                    options_list,
+                                    key=f"sel_online_{row['id']}"
+                                )
+                                
+                                selected_idx = options_list.index(selected_opt_str)
+                                selected_option = online_options[selected_idx]
+                                
+                                # Display all options for transparency
+                                for idx, opt in enumerate(online_options):
+                                    is_lowest = " **[Lowest Price]**" if idx == 0 else ""
+                                    st.markdown(
+                                        f"- {opt['seller']} — **₹{opt['price']}** | {opt['availability']} "
+                                        f"[Product Link]({opt['link']}){is_lowest}"
+                                    )
+                            else:
+                                st.warning("Online price information unavailable — technician may enter expected offline price.")
+                                purchase_method = "Offline / Physical Store"
+                        
+                        if purchase_method == "Offline / Physical Store":
+                            offline_price = st.number_input(
+                                "Expected purchase price (₹)",
+                                min_value=0.0,
+                                value=0.0,
+                                step=10.0,
+                                key=f"offline_price_{row['id']}"
+                            )
+                            offline_store = st.text_input(
+                                "Optional supplier/store name",
+                                placeholder="e.g. Local Electricals",
+                                key=f"offline_store_{row['id']}"
+                            )
+                        
+                        if st.button("Submit Parts Request", key=f"submit_parts_{row['id']}", use_container_width=True):
+                            try:
+                                create_parts_request(
+                                    complaint_id=row["id"],
+                                    technician_id=user["id"],
+                                    part_name=part_name_input.strip(),
+                                    normalized_part_name=normalized_name,
+                                    quantity=int(part_qty),
+                                    purchase_method="Online" if purchase_method == "Online Purchase" else "Offline",
+                                    offline_expected_price=offline_price if purchase_method == "Offline / Physical Store" else None,
+                                    selected_online_price=selected_option["price"] if (purchase_method == "Online Purchase" and selected_option) else None,
+                                    selected_source=selected_option["seller"] if (purchase_method == "Online Purchase" and selected_option) else offline_store,
+                                    selected_product_url=selected_option["link"] if (purchase_method == "Online Purchase" and selected_option) else None
+                                )
+                                st.session_state["work_order_message"] = {
+                                    "status": "Waiting for Manager Approval",
+                                    "text": "Parts request submitted. Waiting for Facility Manager approval."
+                                }
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Error submitting parts request: {exc}")
+
+            elif current_status == "Waiting for Manager Approval":
+                st.warning("⏳ Waiting for Facility Manager approval")
+                reqs = get_parts_requests_by_complaint(row["id"])
+                if reqs:
+                    req = reqs[0]
+                    st.markdown(
+                        f"""
+                        <div style="background-color: #131B2E; border:1px solid #1E293B; border-radius: 8px; padding: 12px; font-size: 14px;">
+                            <b>Requested Part:</b> {req['part_name']} ({req['normalized_part_name']})<br>
+                            <b>Quantity:</b> {req['quantity']}<br>
+                            <b>Method:</b> {req['purchase_method']}<br>
+                            <b>Cost:</b> ₹{req['selected_online_price'] or req['offline_expected_price']}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+            elif current_status == "Parts Approved":
+                st.success("🟢 Facility Manager approved the parts request.")
+                reqs = get_parts_requests_by_complaint(row["id"])
+                if reqs:
+                    req = reqs[0]
+                    rec_method = req['manager_recommendation'] or 'As requested'
+                    st.markdown(
+                        f"""
+                        <div style="background-color: #112F20; border: 1px solid #10B981; border-radius: 8px; padding: 12px; font-size: 14px; margin-bottom: 12px;">
+                            <b>Approved Purchase:</b> {req['normalized_part_name']} ({req['quantity']} units)<br>
+                            <b>Recommended Method:</b> {rec_method}<br>
+                            <b>Comment:</b> {req['manager_comment'] or 'None'}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                if st.button("Start Work", key=f"start_work_approved_{row['id']}", use_container_width=True):
+                    try:
+                        start_work_on_complaint(row["id"])
+                        st.session_state["work_order_message"] = {
+                            "status": "Work Started",
+                            "text": "Work has started. The 1-hour countdown is active."
+                        }
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Error starting work: {exc}")
+
+            elif current_status == "Parts Rejected":
+                st.error("🔴 Parts Request Rejected")
+                reqs = get_parts_requests_by_complaint(row["id"])
+                if reqs:
+                    req = reqs[0]
+                    st.markdown(
+                        f"""
+                        <div style="background-color: #3F1B1F; border: 1px solid #EF4444; border-radius: 8px; padding: 12px; font-size: 14px; margin-bottom: 12px;">
+                            <b>Reason/Comment:</b> {req['manager_comment'] or 'No comment provided.'}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                
+                st.markdown("#### Revise & Resubmit Parts Request")
+                if st.button("🔄 Resubmit / Revise Parts Request", key=f"revise_parts_{row['id']}", use_container_width=True):
+                    try:
+                        update_work_order(row["id"], "Inspection in Progress", "")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Error revising request: {exc}")
+
+            elif current_status == "Work Started":
+                start_time_str = row.get("work_started_at") or row.get("last_status_update") or row.get("accepted_at")
                 elapsed_mins = 0
                 if start_time_str:
                     try:
@@ -1274,11 +1572,10 @@ def technician_dashboard():
                     except Exception as e:
                         pass
 
-                st.info(f"🔴 Accepted / In Progress (Started at {start_time_str})")
+                st.info(f"🔴 Work in Progress (Started at {start_time_str})")
 
                 if elapsed_mins < 60:
                     st.write(f"⏳ Allocated for 1 hour. Time remaining: {60 - elapsed_mins} mins.")
-                    # Allow resolving early
                     with st.expander("Resolve Work Order Early"):
                         early_report = st.text_area(
                             "Resolution Report",
@@ -1300,7 +1597,7 @@ def technician_dashboard():
                     
                     status = st.selectbox(
                         "Update Status",
-                        ["Accepted/In Progress", "Resolved"],
+                        ["Work Started", "Resolved"],
                         index=0,
                         key=f"status_{row['id']}",
                     )
@@ -1328,6 +1625,7 @@ def technician_dashboard():
                 if row.get("resolution_report"):
                     st.markdown("**Resolution Report:**")
                     st.info(safe_value(row.get("resolution_report")))
+
 
 # ============================================================
 # FACILITY MANAGER DASHBOARD
@@ -1421,6 +1719,123 @@ def manager_dashboard():
             st.divider()
             st.info("No complaints are available.")
         else:
+            # --------------------------------------------------------
+            # PARTS & PROCUREMENT CONTROL (STATS & APPROVALS)
+            # --------------------------------------------------------
+            st.divider()
+            st.markdown("### 🧰 Parts & Procurement Control")
+            
+            all_reqs = get_all_parts_requests()
+            pending_reqs = [r for r in all_reqs if r["status"] == "Pending"]
+            approved_reqs = [r for r in all_reqs if r["status"] == "Approved"]
+            rejected_reqs = [r for r in all_reqs if r["status"] == "Rejected"]
+            
+            total_est_cost = sum((r["selected_online_price"] or r["offline_expected_price"] or 0) * r["quantity"] for r in approved_reqs)
+            online_count = sum(1 for r in all_reqs if r["purchase_method"] == "Online")
+            offline_count = sum(1 for r in all_reqs if r["purchase_method"] == "Offline")
+            
+            potential_savings = 0.0
+            for r in all_reqs:
+                if r["offline_expected_price"] and r["selected_online_price"]:
+                    diff = r["offline_expected_price"] - r["selected_online_price"]
+                    if diff > 0:
+                        potential_savings += diff * r["quantity"]
+            
+            col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+            with col_p1:
+                metric("Pending Approvals", len(pending_reqs), "⏳")
+            with col_p2:
+                metric("Approved Requests", len(approved_reqs), "✅")
+            with col_p3:
+                metric("Total Estimated Cost", f"₹{total_est_cost:.2f}", "💰")
+            with col_p4:
+                metric("Potential Savings", f"₹{potential_savings:.2f}", "🛡️")
+                
+            st.write(f"📊 **Purchase Requests Breakdown**: {online_count} Online vs {offline_count} Offline Store requests.")
+
+            if pending_reqs:
+                st.markdown("### 🧰 Pending Parts Approvals")
+                for req in pending_reqs:
+                    with st.container(key=f"pending_container_{req['id']}"):
+                        st.markdown(
+                            f"""
+                            <div style="background-color: #131B2E; border: 1px solid #1E293B; border-left: 4px solid #F59E0B; border-radius: 12px; padding: 16px; margin-bottom: 12px;">
+                                <h4 style="margin: 0 0 8px 0; color: #FFFFFF !important;">Complaint {req['complaint_id']}</h4>
+                                <b>Requested Part:</b> {req['part_name']} (AI Normalized: {req['normalized_part_name']})<br>
+                                <b>Technician:</b> {req['technician_name']} ({req['technician_id']})<br>
+                                <b>Quantity:</b> {req['quantity']}<br>
+                                <b>Requested Purchase Method:</b> {req['purchase_method']}<br>
+                                <b>Remarks:</b> {req['manager_comment'] or 'No remarks provided.'}
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                        
+                        cheaper_rec = ""
+                        online_val = req["selected_online_price"]
+                        offline_val = req["offline_expected_price"]
+                        
+                        a_col, b_col = st.columns(2)
+                        with a_col:
+                            if online_val:
+                                st.write(f"🌐 **Online lowest price**: ₹{online_val}")
+                            else:
+                                st.write("🌐 **Online price**: Not available")
+                            if offline_val:
+                                st.write(f"🏪 **Offline expected price**: ₹{offline_val}")
+                            else:
+                                st.write("🏪 **Offline price**: Not specified")
+                                
+                        with b_col:
+                            if online_val and offline_val:
+                                diff = offline_val - online_val
+                                if diff > 0:
+                                    cheaper_rec = "🌐 Online option is cheaper"
+                                    st.success(f"🤖 AI Recommendation: Buy Online (Saves ₹{diff * req['quantity']:.2f})")
+                                elif diff < 0:
+                                    cheaper_rec = "🏪 Offline option is cheaper"
+                                    st.success(f"🤖 AI Recommendation: Buy Offline (Saves ₹{abs(diff) * req['quantity']:.2f})")
+                                else:
+                                    cheaper_rec = "Equal prices"
+                                    st.info("🤖 AI Recommendation: Price matches exactly.")
+                            elif online_val:
+                                st.info("🤖 AI Recommendation: Recommended Buy Online.")
+                            elif offline_val:
+                                st.info("🤖 AI Recommendation: Recommended Buy Offline.")
+                        
+                        rec_method = st.radio(
+                            "Recommended Purchase Method",
+                            ["Buy Online", "Buy Offline"],
+                            index=0 if "Online" in cheaper_rec or not offline_val else 1,
+                            key=f"mgr_rec_{req['id']}"
+                        )
+                        
+                        comment = st.text_input(
+                            "Manager Comment / Reason",
+                            placeholder="Add approval comment or rejection reason...",
+                            key=f"mgr_cmt_{req['id']}"
+                        )
+                        
+                        btn_col1, btn_col2 = st.columns(2)
+                        with btn_col1:
+                            if st.button("✅ Approve", key=f"appr_btn_{req['id']}", use_container_width=True):
+                                try:
+                                    update_parts_request_status(req["id"], "Approved", rec_method, comment)
+                                    st.success("Parts request approved.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                        with btn_col2:
+                            if st.button("❌ Reject", key=f"rej_btn_{req['id']}", use_container_width=True):
+                                try:
+                                    update_parts_request_status(req["id"], "Rejected", rec_method, comment)
+                                    st.warning("Parts request rejected.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                                    
+                st.divider()
+
             # --------------------------------------------------------
             # PREPARE ANALYTICS
             # --------------------------------------------------------
